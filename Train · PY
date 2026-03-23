@@ -1,0 +1,350 @@
+# ============================================================
+# src/train.py — AI Threat Detection Framework
+# Train Random Forest, XGBoost, LSTM, and Autoencoder models
+# Full implementation runs in Week 3.
+# ============================================================
+
+import os
+import json
+import logging
+import numpy as np
+import pandas as pd
+import joblib
+import matplotlib.pyplot as plt
+from sklearn.metrics import (classification_report, confusion_matrix,
+                              roc_auc_score, accuracy_score)
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s — %(levelname)s — %(message)s"
+)
+logger = logging.getLogger(__name__)
+
+
+# ============================================================
+# HELPER — Load processed data
+# ============================================================
+
+def load_splits(processed_dir: str = "data/processed/") -> dict:
+    """Load train/val/test splits saved by preprocess.py."""
+    logger.info("Loading processed data splits...")
+    splits = {}
+    for name in ["X_train", "X_val", "X_test", "y_train", "y_val", "y_test"]:
+        path = os.path.join(processed_dir, f"{name}.csv")
+        splits[name] = pd.read_csv(path).values
+        logger.info(f"  Loaded {name}: shape {splits[name].shape}")
+    return splits
+
+
+# ============================================================
+# MODEL 1 — Random Forest (Baseline)
+# ============================================================
+
+def train_random_forest(X_train, y_train,
+                        n_estimators: int = 100,
+                        save_path: str = "models/random_forest.pkl"):
+    """
+    Train a Random Forest classifier on the training data.
+
+    Args:
+        X_train:       Training features (numpy array)
+        y_train:       Training labels (numpy array)
+        n_estimators:  Number of trees in the forest
+        save_path:     Where to save the trained model
+
+    Returns:
+        Trained RandomForestClassifier model
+    """
+    from sklearn.ensemble import RandomForestClassifier
+
+    logger.info(f"Training Random Forest (n_estimators={n_estimators})...")
+    model = RandomForestClassifier(
+        n_estimators=n_estimators,
+        max_depth=None,
+        min_samples_split=2,
+        min_samples_leaf=1,
+        random_state=42,
+        n_jobs=-1,
+        verbose=1
+    )
+    model.fit(X_train, y_train)
+
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    joblib.dump(model, save_path)
+    logger.info(f"Random Forest saved: {save_path}")
+    return model
+
+
+# ============================================================
+# MODEL 2 — XGBoost
+# ============================================================
+
+def train_xgboost(X_train, y_train,
+                  save_path: str = "models/xgboost_model.pkl"):
+    """
+    Train an XGBoost classifier.
+
+    Args:
+        X_train:   Training features
+        y_train:   Training labels
+        save_path: Where to save the model
+
+    Returns:
+        Trained XGBClassifier model
+    """
+    import xgboost as xgb
+
+    n_classes = len(np.unique(y_train))
+    logger.info(f"Training XGBoost ({n_classes} classes)...")
+
+    model = xgb.XGBClassifier(
+        n_estimators=200,
+        max_depth=6,
+        learning_rate=0.1,
+        subsample=0.8,
+        colsample_bytree=0.8,
+        use_label_encoder=False,
+        eval_metric="mlogloss",
+        random_state=42,
+        n_jobs=-1,
+        verbosity=1
+    )
+    model.fit(X_train, y_train,
+              eval_set=[(X_train, y_train)],
+              verbose=50)
+
+    joblib.dump(model, save_path)
+    logger.info(f"XGBoost saved: {save_path}")
+    return model
+
+
+# ============================================================
+# MODEL 3 — LSTM Deep Learning
+# ============================================================
+
+def train_lstm(X_train, y_train, X_val, y_val,
+               epochs: int = 20,
+               batch_size: int = 256,
+               save_path: str = "models/lstm_model.keras"):
+    """
+    Train an LSTM model on sequential network traffic data.
+    Reshapes data into (samples, timesteps=1, features) for LSTM input.
+
+    Args:
+        X_train:    Training features
+        y_train:    Training labels
+        X_val:      Validation features
+        y_val:      Validation labels
+        epochs:     Number of training epochs
+        batch_size: Samples per gradient update
+        save_path:  Where to save the trained model
+
+    Returns:
+        Trained Keras model and training history
+    """
+    import tensorflow as tf
+    from tensorflow.keras.models import Sequential
+    from tensorflow.keras.layers import (LSTM, Dense, Dropout,
+                                          BatchNormalization)
+    from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
+
+    n_features = X_train.shape[1]
+    n_classes  = len(np.unique(y_train))
+
+    logger.info(f"Training LSTM (features={n_features}, classes={n_classes})...")
+
+    # Reshape: (samples, timesteps=1, features)
+    X_train_3d = X_train.reshape((X_train.shape[0], 1, n_features))
+    X_val_3d   = X_val.reshape((X_val.shape[0],   1, n_features))
+
+    # Build LSTM architecture
+    model = Sequential([
+        LSTM(128, input_shape=(1, n_features), return_sequences=True),
+        Dropout(0.3),
+        LSTM(64, return_sequences=False),
+        Dropout(0.3),
+        BatchNormalization(),
+        Dense(64, activation="relu"),
+        Dropout(0.2),
+        Dense(n_classes, activation="softmax")
+    ])
+
+    model.compile(
+        optimizer=tf.keras.optimizers.Adam(learning_rate=0.001),
+        loss="sparse_categorical_crossentropy",
+        metrics=["accuracy"]
+    )
+
+    model.summary()
+
+    # Callbacks
+    callbacks = [
+        EarlyStopping(monitor="val_loss", patience=3,
+                      restore_best_weights=True, verbose=1),
+        ModelCheckpoint(save_path, monitor="val_accuracy",
+                        save_best_only=True, verbose=1)
+    ]
+
+    history = model.fit(
+        X_train_3d, y_train,
+        validation_data=(X_val_3d, y_val),
+        epochs=epochs,
+        batch_size=batch_size,
+        callbacks=callbacks,
+        verbose=1
+    )
+
+    logger.info(f"LSTM model saved: {save_path}")
+    return model, history
+
+
+# ============================================================
+# MODEL 4 — Autoencoder (Anomaly Detection)
+# ============================================================
+
+def train_autoencoder(X_benign,
+                      encoding_dim: int = 16,
+                      epochs: int = 30,
+                      batch_size: int = 256,
+                      save_path: str = "models/autoencoder.keras"):
+    """
+    Train an Autoencoder on BENIGN traffic only.
+    Anomalies are detected by high reconstruction error.
+
+    Args:
+        X_benign:     Only BENIGN (normal) traffic features
+        encoding_dim: Size of the compressed latent representation
+        epochs:       Training epochs
+        batch_size:   Batch size
+        save_path:    Where to save the autoencoder
+
+    Returns:
+        Trained autoencoder Keras model
+    """
+    import tensorflow as tf
+    from tensorflow.keras.models import Model
+    from tensorflow.keras.layers import Input, Dense
+
+    n_features = X_benign.shape[1]
+    logger.info(f"Training Autoencoder on {len(X_benign)} benign samples...")
+
+    # Encoder
+    inputs  = Input(shape=(n_features,))
+    enc1    = Dense(64, activation="relu")(inputs)
+    enc2    = Dense(32, activation="relu")(enc1)
+    encoded = Dense(encoding_dim, activation="relu")(enc2)
+
+    # Decoder
+    dec1    = Dense(32, activation="relu")(encoded)
+    dec2    = Dense(64, activation="relu")(dec1)
+    decoded = Dense(n_features, activation="linear")(dec2)
+
+    autoencoder = Model(inputs, decoded)
+    autoencoder.compile(optimizer="adam", loss="mse")
+    autoencoder.summary()
+
+    autoencoder.fit(
+        X_benign, X_benign,
+        epochs=epochs,
+        batch_size=batch_size,
+        shuffle=True,
+        validation_split=0.1,
+        verbose=1
+    )
+
+    autoencoder.save(save_path)
+    logger.info(f"Autoencoder saved: {save_path}")
+    return autoencoder
+
+
+# ============================================================
+# EVALUATION
+# ============================================================
+
+def evaluate_model(model, X_test, y_test,
+                   model_name: str = "Model",
+                   label_map_path: str = "data/label_map.json"):
+    """
+    Evaluate a trained model. Print classification report,
+    accuracy, and save confusion matrix chart.
+
+    Args:
+        model:          Trained scikit-learn or Keras model
+        X_test:         Test features
+        y_test:         True labels
+        model_name:     Label for logging and chart title
+        label_map_path: Path to label-to-integer mapping JSON
+    """
+    logger.info(f"Evaluating {model_name}...")
+
+    # Predict
+    if hasattr(model, "predict_proba"):
+        y_pred = model.predict(X_test)
+    else:
+        # Keras model
+        X_3d   = X_test.reshape((X_test.shape[0], 1, X_test.shape[1]))
+        y_pred = np.argmax(model.predict(X_3d), axis=1)
+
+    # Load label names
+    with open(label_map_path) as f:
+        label_map = json.load(f)
+    target_names = [k for k, v in sorted(label_map.items(), key=lambda x: x[1])]
+
+    # Print report
+    print("\n" + "=" * 60)
+    print(f"  {model_name} — Classification Report")
+    print("=" * 60)
+    print(classification_report(y_test, y_pred, target_names=target_names))
+    print(f"  Overall Accuracy: {accuracy_score(y_test, y_pred):.4f}")
+    print("=" * 60 + "\n")
+
+    # Confusion matrix plot
+    cm = confusion_matrix(y_test, y_pred)
+    plt.figure(figsize=(10, 8))
+    import seaborn as sns
+    sns.heatmap(cm, annot=True, fmt="d", cmap="Blues",
+                xticklabels=target_names, yticklabels=target_names)
+    plt.title(f"{model_name} — Confusion Matrix")
+    plt.ylabel("True Label")
+    plt.xlabel("Predicted Label")
+    plt.tight_layout()
+    safe_name = model_name.lower().replace(" ", "_")
+    plt.savefig(f"reports/confusion_matrix_{safe_name}.png", dpi=150)
+    plt.close()
+    logger.info(f"Confusion matrix saved: reports/confusion_matrix_{safe_name}.png")
+
+    return y_pred
+
+
+# ============================================================
+# ENTRY POINT — Train all models
+# ============================================================
+
+if __name__ == "__main__":
+    logger.info("Loading processed data...")
+    splits = load_splits()
+
+    X_train = splits["X_train"]
+    X_val   = splits["X_val"]
+    X_test  = splits["X_test"]
+    y_train = splits["y_train"].ravel()
+    y_val   = splits["y_val"].ravel()
+    y_test  = splits["y_test"].ravel()
+
+    # 1 — Random Forest
+    rf = train_random_forest(X_train, y_train)
+    evaluate_model(rf, X_test, y_test, model_name="Random Forest")
+
+    # 2 — XGBoost
+    xgb_model = train_xgboost(X_train, y_train)
+    evaluate_model(xgb_model, X_test, y_test, model_name="XGBoost")
+
+    # 3 — LSTM
+    lstm_model, history = train_lstm(X_train, y_train, X_val, y_val)
+    evaluate_model(lstm_model, X_test, y_test, model_name="LSTM")
+
+    # 4 — Autoencoder (train on benign only)
+    benign_idx = np.where(y_train == 0)[0]
+    autoencoder = train_autoencoder(X_train[benign_idx])
+
+    logger.info("All models trained and saved to models/")
