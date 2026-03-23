@@ -1,0 +1,242 @@
+# ============================================================
+# src/alert.py — AI Threat Detection Framework
+# Send email and AWS SNS alerts when critical threats detected
+# Configure your credentials in a .env file before use.
+# ============================================================
+
+import os
+import json
+import smtplib
+import logging
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from datetime import datetime
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s — %(levelname)s — %(message)s"
+)
+logger = logging.getLogger(__name__)
+
+
+# ============================================================
+# CONFIGURATION — Load from .env file
+# ============================================================
+# Create a .env file in your project root with:
+#
+#   ALERT_EMAIL_FROM=youremail@gmail.com
+#   ALERT_EMAIL_TO=recipient@email.com
+#   ALERT_EMAIL_PASSWORD=your_app_password
+#   ALERT_SMTP_HOST=smtp.gmail.com
+#   ALERT_SMTP_PORT=587
+#   AWS_SNS_TOPIC_ARN=arn:aws:sns:us-east-1:XXXX:threat-alerts
+#   AWS_REGION=us-east-1
+#
+# NOTE: For Gmail, enable 2FA and generate an App Password.
+# NEVER commit your .env file to GitHub (.gitignore covers it).
+# ============================================================
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
+EMAIL_FROM     = os.getenv("ALERT_EMAIL_FROM", "")
+EMAIL_TO       = os.getenv("ALERT_EMAIL_TO", "")
+EMAIL_PASSWORD = os.getenv("ALERT_EMAIL_PASSWORD", "")
+SMTP_HOST      = os.getenv("ALERT_SMTP_HOST", "smtp.gmail.com")
+SMTP_PORT      = int(os.getenv("ALERT_SMTP_PORT", 587))
+SNS_TOPIC_ARN  = os.getenv("AWS_SNS_TOPIC_ARN", "")
+AWS_REGION     = os.getenv("AWS_REGION", "us-east-1")
+
+# Severity levels that trigger an alert
+ALERT_SEVERITIES = {"critical", "high"}
+
+# Minimum confidence to trigger an alert
+ALERT_CONFIDENCE_THRESHOLD = 0.85
+
+
+# ============================================================
+# FORMAT ALERT MESSAGE
+# ============================================================
+
+def format_alert_message(result: dict) -> tuple:
+    """
+    Format a threat detection result into email subject and body.
+
+    Args:
+        result: Prediction dictionary from detect.py
+
+    Returns:
+        (subject: str, body: str) tuple
+    """
+    subject = (
+        f"[{result['severity'].upper()} THREAT] "
+        f"{result['label']} detected — AI Threat Detection System"
+    )
+
+    body = f"""
+AI-Based Threat Detection Framework — Security Alert
+======================================================
+
+A {result['severity'].upper()} severity threat was detected.
+
+  Timestamp   : {result['timestamp']}
+  Attack Type : {result['label']}
+  Confidence  : {result['confidence'] * 100:.1f}%
+  Severity    : {result['severity'].upper()}
+  Is Threat   : {result['is_threat']}
+
+------------------------------------------------------
+Immediate action may be required.
+Review logs at: logs/threat_log.csv
+
+This alert was generated automatically by the
+AI-Based Threat Detection Framework.
+======================================================
+"""
+    return subject, body
+
+
+# ============================================================
+# SEND EMAIL ALERT
+# ============================================================
+
+def send_email_alert(result: dict) -> bool:
+    """
+    Send a threat alert email using SMTP (Gmail or other provider).
+
+    Args:
+        result: Prediction dictionary from detect.py
+
+    Returns:
+        True if email sent successfully, False otherwise
+    """
+    if not EMAIL_FROM or not EMAIL_TO or not EMAIL_PASSWORD:
+        logger.warning("Email credentials not configured. Skipping email alert.")
+        logger.warning("Set ALERT_EMAIL_FROM, ALERT_EMAIL_TO, ALERT_EMAIL_PASSWORD in .env")
+        return False
+
+    subject, body = format_alert_message(result)
+
+    try:
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = subject
+        msg["From"]    = EMAIL_FROM
+        msg["To"]      = EMAIL_TO
+        msg.attach(MIMEText(body, "plain"))
+
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
+            server.ehlo()
+            server.starttls()
+            server.login(EMAIL_FROM, EMAIL_PASSWORD)
+            server.sendmail(EMAIL_FROM, EMAIL_TO, msg.as_string())
+
+        logger.info(f"Email alert sent to: {EMAIL_TO}")
+        return True
+
+    except Exception as e:
+        logger.error(f"Failed to send email alert: {e}")
+        return False
+
+
+# ============================================================
+# SEND AWS SNS ALERT
+# ============================================================
+
+def send_sns_alert(result: dict) -> bool:
+    """
+    Publish a threat alert to an AWS SNS topic.
+    SNS can deliver to Email, SMS, Lambda, SQS, and more.
+
+    Args:
+        result: Prediction dictionary from detect.py
+
+    Returns:
+        True if SNS message published successfully, False otherwise
+    """
+    if not SNS_TOPIC_ARN:
+        logger.warning("AWS SNS Topic ARN not configured. Skipping SNS alert.")
+        logger.warning("Set AWS_SNS_TOPIC_ARN in your .env file.")
+        return False
+
+    try:
+        import boto3
+        client = boto3.client("sns", region_name=AWS_REGION)
+
+        subject, body = format_alert_message(result)
+
+        response = client.publish(
+            TopicArn=SNS_TOPIC_ARN,
+            Subject=subject[:100],   # SNS subject max 100 chars
+            Message=body
+        )
+        logger.info(f"SNS alert published. MessageId: {response['MessageId']}")
+        return True
+
+    except ImportError:
+        logger.error("boto3 not installed. Run: pip install boto3")
+        return False
+    except Exception as e:
+        logger.error(f"Failed to publish SNS alert: {e}")
+        return False
+
+
+# ============================================================
+# MAIN ALERT DISPATCHER
+# ============================================================
+
+def trigger_alert(result: dict):
+    """
+    Decide whether to send an alert based on severity and confidence.
+    If threshold is met, sends both email and SNS alerts.
+
+    Args:
+        result: Prediction dictionary from detect.py
+    """
+    if not result.get("is_threat", False):
+        return
+
+    if result.get("severity") not in ALERT_SEVERITIES:
+        return
+
+    if result.get("confidence", 0) < ALERT_CONFIDENCE_THRESHOLD:
+        logger.info(
+            f"Threat detected but confidence {result['confidence']:.2f} "
+            f"below threshold {ALERT_CONFIDENCE_THRESHOLD}. No alert sent."
+        )
+        return
+
+    logger.warning(
+        f"ALERT TRIGGERED — {result['label']} | "
+        f"Severity: {result['severity']} | "
+        f"Confidence: {result['confidence']:.4f}"
+    )
+
+    # Send both channels
+    email_ok = send_email_alert(result)
+    sns_ok   = send_sns_alert(result)
+
+    if not email_ok and not sns_ok:
+        logger.error("All alert channels failed. Check your configuration.")
+
+
+# ============================================================
+# ENTRY POINT — Test alert system
+# ============================================================
+
+if __name__ == "__main__":
+    # Simulate a critical DDoS detection to test alerts
+    test_result = {
+        "timestamp":  datetime.now().isoformat(),
+        "label":      "DDoS",
+        "confidence": 0.9732,
+        "severity":   "critical",
+        "is_threat":  True,
+        "pred_class": 3
+    }
+
+    logger.info("Testing alert system with simulated DDoS detection...")
+    trigger_alert(test_result)
+    logger.info("Alert test complete. Check your email / SNS topic.")
