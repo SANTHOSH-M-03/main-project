@@ -1,0 +1,9 @@
+# ============================================================
+# src/__init__.py — AI Threat Detection Framework
+# Makes the src/ directory a Python package so you can
+# import from it: from src.preprocess import load_data
+# ============================================================
+
+__version__ = "1.0.0"
+__author__  = "Your Name"
+__project__ = "AI-Based Threat Detection Framework"
