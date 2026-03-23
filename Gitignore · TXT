@@ -1,0 +1,141 @@
+# ============================================================
+# .gitignore — AI Threat Detection Framework
+# ============================================================
+
+# ---------------------------
+# Python
+# ---------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+*.whl
+MANIFEST
+
+# ---------------------------
+# Virtual Environments
+# ---------------------------
+threat_env/
+venv/
+.venv/
+env/
+ENV/
+.env/
+
+# ---------------------------
+# Environment Variables
+# ---------------------------
+.env
+*.env
+.env.local
+.env.production
+secrets.json
+
+# ---------------------------
+# Jupyter Notebooks
+# ---------------------------
+.ipynb_checkpoints/
+*/.ipynb_checkpoints/*
+*.ipynb_checkpoints
+
+# ---------------------------
+# Data Files (too large for git)
+# ---------------------------
+data/raw/*.csv
+data/raw/*.zip
+data/raw/*.gz
+data/raw/*.tar
+data/raw/*.pcap
+data/raw/*.pcapng
+data/cleaned/*.csv
+data/processed/*.csv
+data/processed/*.npy
+data/processed/*.npz
+
+# ---------------------------
+# Saved Models (too large for git)
+# ---------------------------
+models/*.pkl
+models/*.pickle
+models/*.keras
+models/*.h5
+models/*.pb
+models/*.onnx
+models/*.joblib
+models/*.pt
+models/*.pth
+
+# ---------------------------
+# Logs
+# ---------------------------
+logs/*.csv
+logs/*.json
+logs/*.log
+logs/*.txt
+*.log
+
+# ---------------------------
+# Reports and Charts (generated)
+# ---------------------------
+reports/*.png
+reports/*.jpg
+reports/*.pdf
+
+# ---------------------------
+# OS Files
+# ---------------------------
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# ---------------------------
+# IDE / Editor
+# ---------------------------
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+
+# ---------------------------
+# AWS Credentials (NEVER commit)
+# ---------------------------
+*.pem
+*.ppk
+.aws/
+aws_credentials.json
+credentials
+
+# ---------------------------
+# Coverage / Testing
+# ---------------------------
+.coverage
+.pytest_cache/
+htmlcov/
+.tox/
+coverage.xml
+*.cover
+
+# ---------------------------
+# Temporary Files
+# ---------------------------
+*.tmp
+*.temp
+*.bak
+*.orig
+tmp/
+temp/
