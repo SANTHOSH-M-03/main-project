@@ -1,0 +1,88 @@
+#!/bin/bash
+# ============================================================
+# setup_day1.sh — AI Threat Detection Framework
+# Run this script to create all folders, git init,
+# and connect to your GitHub repo in one go.
+#
+# Usage:
+#   chmod +x setup_day1.sh
+#   ./setup_day1.sh
+# ============================================================
+
+set -e   # exit immediately if any command fails
+
+echo ""
+echo "====================================================="
+echo "  AI Threat Detection — Day 1 Setup Script"
+echo "====================================================="
+echo ""
+
+# ---- Prompt for GitHub username ----
+read -p "Enter your GitHub username: " GH_USER
+read -p "Enter your GitHub repo name (default: ai-threat-detection): " GH_REPO
+GH_REPO=${GH_REPO:-ai-threat-detection}
+
+echo ""
+echo "Setting up project for: $GH_USER/$GH_REPO"
+echo ""
+
+# ---- Git config ----
+echo "[1/6] Configuring Git identity..."
+read -p "  Your full name: " GIT_NAME
+read -p "  Your email: " GIT_EMAIL
+git config --global user.name "$GIT_NAME"
+git config --global user.email "$GIT_EMAIL"
+git config --global init.defaultBranch main
+echo "  Done."
+
+# ---- Init git ----
+echo ""
+echo "[2/6] Initialising Git repository..."
+git init
+echo "  Done."
+
+# ---- Create all folders ----
+echo ""
+echo "[3/6] Creating folder structure..."
+mkdir -p data/raw data/cleaned data/processed \
+         models notebooks src \
+         logs reports tests
+
+# .gitkeep to track empty folders
+touch data/raw/.gitkeep
+touch data/cleaned/.gitkeep
+touch data/processed/.gitkeep
+touch models/.gitkeep
+touch logs/.gitkeep
+touch reports/.gitkeep
+touch tests/.gitkeep
+echo "  All folders created."
+
+# ---- Create src/__init__.py ----
+echo ""
+echo "[4/6] Creating src/__init__.py..."
+cat > src/__init__.py << 'EOF'
+__version__ = "1.0.0"
+__project__ = "AI-Based Threat Detection Framework"
+EOF
+echo "  Done."
+
+# ---- Connect to GitHub ----
+echo ""
+echo "[5/6] Connecting to GitHub..."
+git remote add origin "https://github.com/$GH_USER/$GH_REPO.git"
+echo "  Remote set to: https://github.com/$GH_USER/$GH_REPO.git"
+
+# ---- First commit ----
+echo ""
+echo "[6/6] Making first commit and pushing to GitHub..."
+git add .
+git commit -m "init: Day 1 complete — project structure, scope doc, all starter files"
+git push -u origin main
+
+echo ""
+echo "====================================================="
+echo "  Day 1 Setup Complete!"
+echo "  Repo: https://github.com/$GH_USER/$GH_REPO"
+echo "====================================================="
+echo ""
