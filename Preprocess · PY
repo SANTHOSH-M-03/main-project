@@ -1,0 +1,377 @@
+# ============================================================
+# src/preprocess.py — AI Threat Detection Framework
+# Data cleaning, feature engineering, scaling, SMOTE, split
+# Week 2 will run and complete this script fully.
+# ============================================================
+
+import os
+import json
+import logging
+import pandas as pd
+import numpy as np
+import joblib
+from sklearn.preprocessing import StandardScaler, LabelEncoder
+from sklearn.model_selection import train_test_split
+from sklearn.feature_selection import VarianceThreshold
+
+# Set up logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s — %(levelname)s — %(message)s"
+)
+logger = logging.getLogger(__name__)
+
+
+# ============================================================
+# STEP 1 — Load Data
+# ============================================================
+
+def load_data(filepath: str) -> pd.DataFrame:
+    """
+    Load a CSV dataset and strip whitespace from column names.
+
+    Args:
+        filepath: Path to the CSV file
+
+    Returns:
+        pandas DataFrame with cleaned column names
+    """
+    logger.info(f"Loading data from: {filepath}")
+    df = pd.read_csv(filepath, low_memory=False)
+    df.columns = df.columns.str.strip()
+    logger.info(f"Loaded shape: {df.shape[0]} rows x {df.shape[1]} columns")
+    return df
+
+
+def load_all_cicids(folder: str = "data/raw/") -> pd.DataFrame:
+    """
+    Load and combine all CICIDS 2017 CSV files from a folder.
+
+    Args:
+        folder: Path to folder containing CICIDS CSV files
+
+    Returns:
+        Combined pandas DataFrame
+    """
+    logger.info(f"Loading all CSV files from: {folder}")
+    files = [f for f in os.listdir(folder) if f.endswith(".csv")]
+    dfs = []
+
+    for f in files:
+        path = os.path.join(folder, f)
+        logger.info(f"  Reading: {f}")
+        df = pd.read_csv(path, low_memory=False)
+        df.columns = df.columns.str.strip()
+        df["source_file"] = f
+        dfs.append(df)
+
+    combined = pd.concat(dfs, ignore_index=True)
+    logger.info(f"Combined shape: {combined.shape[0]} rows x {combined.shape[1]} cols")
+    return combined
+
+
+# ============================================================
+# STEP 2 — Clean Data
+# ============================================================
+
+def clean_data(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Remove null values, infinite values, and duplicate rows.
+
+    Args:
+        df: Raw DataFrame
+
+    Returns:
+        Cleaned DataFrame
+    """
+    logger.info("Cleaning data...")
+    before = df.shape[0]
+
+    # Replace infinite values with NaN
+    df.replace([np.inf, -np.inf], np.nan, inplace=True)
+
+    # Drop rows with any NaN
+    df.dropna(inplace=True)
+
+    # Drop exact duplicate rows
+    df.drop_duplicates(inplace=True)
+
+    after = df.shape[0]
+    logger.info(f"Rows before: {before} | After cleaning: {after} | Removed: {before - after}")
+    return df
+
+
+# ============================================================
+# STEP 3 — Encode Labels
+# ============================================================
+
+def encode_labels(df: pd.DataFrame,
+                  label_col: str = "Label",
+                  save_path: str = "data/label_map.json") -> tuple:
+    """
+    Encode string attack labels into integer class IDs.
+    Saves the label mapping to a JSON file for later decoding.
+
+    Args:
+        df:         DataFrame with a string label column
+        label_col:  Name of the target label column
+        save_path:  Where to save the label-to-integer mapping
+
+    Returns:
+        (df, label_encoder) tuple
+    """
+    logger.info("Encoding labels...")
+    le = LabelEncoder()
+    df[label_col] = le.fit_transform(df[label_col])
+
+    # Save label map: {"BENIGN": 0, "DDoS": 1, ...}
+    label_map = {cls: int(idx) for idx, cls in enumerate(le.classes_)}
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    with open(save_path, "w") as f:
+        json.dump(label_map, f, indent=2)
+
+    logger.info(f"Label map saved to: {save_path}")
+    logger.info(f"Classes: {label_map}")
+    return df, le
+
+
+# ============================================================
+# STEP 4 — Feature Selection
+# ============================================================
+
+def select_features(df: pd.DataFrame,
+                    label_col: str = "Label",
+                    variance_threshold: float = 0.01,
+                    correlation_threshold: float = 0.95) -> tuple:
+    """
+    Remove low-variance and highly-correlated features.
+
+    Args:
+        df:                    DataFrame with numeric features
+        label_col:             Target column name (excluded from selection)
+        variance_threshold:    Drop features with variance below this
+        correlation_threshold: Drop one of each pair with r > this
+
+    Returns:
+        (X DataFrame, y Series) after feature selection
+    """
+    logger.info("Selecting features...")
+
+    # Separate features and labels
+    X = df.select_dtypes(include=[np.number]).drop(columns=[label_col], errors="ignore")
+    y = df[label_col]
+
+    # Remove low-variance features
+    selector = VarianceThreshold(threshold=variance_threshold)
+    X_selected = pd.DataFrame(
+        selector.fit_transform(X),
+        columns=X.columns[selector.get_support()]
+    )
+    logger.info(f"After variance filter: {X_selected.shape[1]} features (was {X.shape[1]})")
+
+    # Remove highly correlated features
+    corr_matrix = X_selected.corr().abs()
+    upper = corr_matrix.where(
+        np.triu(np.ones(corr_matrix.shape), k=1).astype(bool)
+    )
+    to_drop = [col for col in upper.columns if any(upper[col] > correlation_threshold)]
+    X_final = X_selected.drop(columns=to_drop)
+    logger.info(f"After correlation filter: {X_final.shape[1]} features (dropped {len(to_drop)})")
+
+    # Save final feature list
+    feature_list = X_final.columns.tolist()
+    with open("data/selected_features.json", "w") as f:
+        json.dump(feature_list, f, indent=2)
+    logger.info(f"Selected features saved to: data/selected_features.json")
+
+    return X_final, y
+
+
+# ============================================================
+# STEP 5 — Normalize Features
+# ============================================================
+
+def normalize(X_train: pd.DataFrame,
+              X_test: pd.DataFrame,
+              save_path: str = "models/scaler.pkl") -> tuple:
+    """
+    Apply StandardScaler. Fit ONLY on training data.
+    Save the scaler for use during real-time detection.
+
+    Args:
+        X_train:   Training feature DataFrame
+        X_test:    Test feature DataFrame
+        save_path: Where to save the fitted scaler
+
+    Returns:
+        (X_train_scaled, X_test_scaled) as numpy arrays
+    """
+    logger.info("Normalizing features with StandardScaler...")
+    scaler = StandardScaler()
+    X_train_scaled = scaler.fit_transform(X_train)
+    X_test_scaled  = scaler.transform(X_test)
+
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    joblib.dump(scaler, save_path)
+    logger.info(f"Scaler saved to: {save_path}")
+    return X_train_scaled, X_test_scaled
+
+
+# ============================================================
+# STEP 6 — Handle Class Imbalance (SMOTE)
+# ============================================================
+
+def apply_smote(X_train, y_train, random_state: int = 42):
+    """
+    Apply SMOTE oversampling to balance class distribution.
+    Only applied to training data — NEVER to test data.
+
+    Args:
+        X_train:      Training features (numpy array or DataFrame)
+        y_train:      Training labels
+        random_state: Random seed for reproducibility
+
+    Returns:
+        (X_resampled, y_resampled) balanced arrays
+    """
+    logger.info("Applying SMOTE to balance classes...")
+    from imblearn.over_sampling import SMOTE
+
+    before = dict(zip(*np.unique(y_train, return_counts=True)))
+    logger.info(f"Class distribution before SMOTE: {before}")
+
+    sm = SMOTE(random_state=random_state)
+    X_res, y_res = sm.fit_resample(X_train, y_train)
+
+    after = dict(zip(*np.unique(y_res, return_counts=True)))
+    logger.info(f"Class distribution after SMOTE:  {after}")
+    return X_res, y_res
+
+
+# ============================================================
+# STEP 7 — Train / Validation / Test Split
+# ============================================================
+
+def split_data(X, y,
+               test_size: float = 0.15,
+               val_size: float  = 0.15,
+               random_state: int = 42) -> dict:
+    """
+    Split data into train / validation / test sets.
+    Uses stratified split to preserve class proportions.
+
+    Args:
+        X:            Feature array
+        y:            Label array
+        test_size:    Fraction held out as test set
+        val_size:     Fraction of remaining data held out as val set
+        random_state: Seed for reproducibility
+
+    Returns:
+        Dictionary with keys: X_train, X_val, X_test, y_train, y_val, y_test
+    """
+    logger.info("Splitting into train / val / test sets...")
+
+    # First split: test set
+    X_temp, X_test, y_temp, y_test = train_test_split(
+        X, y, test_size=test_size, random_state=random_state, stratify=y
+    )
+
+    # Second split: val from remaining
+    val_adjusted = val_size / (1 - test_size)
+    X_train, X_val, y_train, y_val = train_test_split(
+        X_temp, y_temp, test_size=val_adjusted, random_state=random_state, stratify=y_temp
+    )
+
+    logger.info(f"Train size: {len(X_train)} | Val size: {len(X_val)} | Test size: {len(X_test)}")
+    return {
+        "X_train": X_train, "X_val": X_val,   "X_test": X_test,
+        "y_train": y_train, "y_val": y_val,   "y_test": y_test
+    }
+
+
+# ============================================================
+# STEP 8 — Save Processed Data
+# ============================================================
+
+def save_splits(splits: dict, output_dir: str = "data/processed/"):
+    """
+    Save train/val/test splits as CSV files.
+
+    Args:
+        splits:     Dictionary from split_data()
+        output_dir: Folder to save CSV files
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    for name, data in splits.items():
+        path = os.path.join(output_dir, f"{name}.csv")
+        pd.DataFrame(data).to_csv(path, index=False)
+        logger.info(f"Saved: {path}")
+
+
+# ============================================================
+# FULL PIPELINE (runs all steps in order)
+# ============================================================
+
+def preprocess(raw_filepath: str = "data/raw/cicids2017_combined.csv"):
+    """
+    Run the full preprocessing pipeline end to end.
+
+    Steps:
+        1. Load data
+        2. Clean (remove nulls, infinities, duplicates)
+        3. Encode labels
+        4. Select features
+        5. Train/test split
+        6. Normalize (fit on train only)
+        7. Apply SMOTE to training data
+        8. Save all splits to data/processed/
+
+    Args:
+        raw_filepath: Path to combined raw CSV
+    """
+    logger.info("=" * 50)
+    logger.info("STARTING PREPROCESSING PIPELINE")
+    logger.info("=" * 50)
+
+    # Step 1 — Load
+    df = load_data(raw_filepath)
+
+    # Step 2 — Clean
+    df = clean_data(df)
+
+    # Step 3 — Encode labels
+    df, le = encode_labels(df, label_col="Label")
+
+    # Step 4 — Select features
+    X, y = select_features(df, label_col="Label")
+
+    # Step 5 — Split (before scaling to avoid data leakage)
+    splits = split_data(X.values, y.values)
+
+    # Step 6 — Normalize
+    splits["X_train"], splits["X_test"] = normalize(
+        pd.DataFrame(splits["X_train"]),
+        pd.DataFrame(splits["X_test"])
+    )
+
+    # Step 7 — SMOTE on training only
+    splits["X_train"], splits["y_train"] = apply_smote(
+        splits["X_train"], splits["y_train"]
+    )
+
+    # Step 8 — Save splits
+    save_splits(splits)
+
+    logger.info("=" * 50)
+    logger.info("PREPROCESSING COMPLETE")
+    logger.info("=" * 50)
+    return splits
+
+
+# ============================================================
+# ENTRY POINT
+# ============================================================
+
+if __name__ == "__main__":
+    preprocess("data/raw/cicids2017_combined.csv")
