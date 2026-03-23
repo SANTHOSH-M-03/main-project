@@ -1,0 +1,284 @@
+# ============================================================
+# app.py — AI Threat Detection Framework
+# Streamlit monitoring dashboard
+# Run: streamlit run app.py
+# Full dashboard implementation completed in Week 4.
+# ============================================================
+
+import os
+import json
+import time
+import logging
+import numpy as np
+import pandas as pd
+import streamlit as st
+import plotly.express as px
+import plotly.graph_objects as go
+from datetime import datetime
+
+# ============================================================
+# PAGE CONFIG
+# ============================================================
+
+st.set_page_config(
+    page_title = "AI Threat Detection Dashboard",
+    page_icon  = "🛡️",
+    layout     = "wide",
+    initial_sidebar_state = "expanded"
+)
+
+# ============================================================
+# SIDEBAR
+# ============================================================
+
+st.sidebar.title("AI Threat Detection")
+st.sidebar.caption("Secure Cloud Environment")
+st.sidebar.divider()
+
+page = st.sidebar.radio(
+    "Navigate",
+    ["Live Dashboard", "Run Detection", "Model Info", "About"]
+)
+
+st.sidebar.divider()
+st.sidebar.markdown("**Project Status**")
+st.sidebar.progress(25, text="Week 1 of 4")
+
+# ============================================================
+# HELPERS
+# ============================================================
+
+SEVERITY_COLORS = {
+    "critical": "#E24B4A",
+    "high":     "#EF9F27",
+    "medium":   "#378ADD",
+    "none":     "#1D9E75"
+}
+
+def load_threat_log(path: str = "logs/threat_log.csv") -> pd.DataFrame:
+    """Load threat detection log CSV if it exists."""
+    if os.path.exists(path):
+        df = pd.read_csv(path)
+        df["timestamp"] = pd.to_datetime(df["timestamp"])
+        return df
+    return pd.DataFrame(columns=[
+        "timestamp", "label", "confidence", "severity", "is_threat"
+    ])
+
+
+def load_label_map(path: str = "data/label_map.json") -> dict:
+    """Load label mapping from preprocessing."""
+    if os.path.exists(path):
+        with open(path) as f:
+            return json.load(f)
+    return {}
+
+
+# ============================================================
+# PAGE 1 — LIVE DASHBOARD
+# ============================================================
+
+if page == "Live Dashboard":
+    st.title("Live Threat Monitoring Dashboard")
+    st.caption(f"Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
+    df = load_threat_log()
+
+    # ---- KPI Row ----
+    col1, col2, col3, col4 = st.columns(4)
+
+    total_records  = len(df)
+    total_threats  = int(df["is_threat"].sum()) if not df.empty else 0
+    critical_count = int((df["severity"] == "critical").sum()) if not df.empty else 0
+    benign_count   = total_records - total_threats
+
+    col1.metric("Total Records",    f"{total_records:,}")
+    col2.metric("Threats Detected", f"{total_threats:,}",
+                delta=f"{total_threats/max(total_records,1)*100:.1f}% threat rate")
+    col3.metric("Critical Threats", f"{critical_count:,}")
+    col4.metric("Benign Traffic",   f"{benign_count:,}")
+
+    st.divider()
+
+    if df.empty:
+        st.info(
+            "No detection data yet.\n\n"
+            "Run the detection pipeline first:\n"
+            "```\npython src/detect.py --input data/raw/sample.csv\n```"
+        )
+    else:
+        col_a, col_b = st.columns(2)
+
+        # Attack type distribution
+        with col_a:
+            st.subheader("Attack type distribution")
+            counts = df["label"].value_counts().reset_index()
+            counts.columns = ["label", "count"]
+            fig = px.bar(counts, x="label", y="count",
+                         color="label", title="",
+                         labels={"label": "Attack Type", "count": "Count"})
+            fig.update_layout(showlegend=False, height=300)
+            st.plotly_chart(fig, use_container_width=True)
+
+        # Severity breakdown
+        with col_b:
+            st.subheader("Severity breakdown")
+            sev = df["severity"].value_counts().reset_index()
+            sev.columns = ["severity", "count"]
+            colors = [SEVERITY_COLORS.get(s, "#888") for s in sev["severity"]]
+            fig2 = px.pie(sev, names="severity", values="count",
+                          color_discrete_sequence=colors)
+            fig2.update_layout(height=300)
+            st.plotly_chart(fig2, use_container_width=True)
+
+        # Time series
+        st.subheader("Detections over time")
+        df_time = df.set_index("timestamp").resample("1min")["is_threat"].sum().reset_index()
+        df_time.columns = ["timestamp", "threat_count"]
+        fig3 = px.line(df_time, x="timestamp", y="threat_count",
+                       labels={"threat_count": "Threats per minute"})
+        fig3.update_layout(height=250)
+        st.plotly_chart(fig3, use_container_width=True)
+
+        # Recent threats table
+        st.subheader("Recent threat detections")
+        recent = df[df["is_threat"]].tail(20).sort_values(
+            "timestamp", ascending=False
+        ).reset_index(drop=True)
+
+        def color_severity(val):
+            color = SEVERITY_COLORS.get(val, "transparent")
+            return f"background-color: {color}20; color: {color}"
+
+        if not recent.empty:
+            st.dataframe(
+                recent[["timestamp", "label", "confidence", "severity"]],
+                use_container_width=True
+            )
+        else:
+            st.info("No threats detected yet in the log.")
+
+# ============================================================
+# PAGE 2 — RUN DETECTION
+# ============================================================
+
+elif page == "Run Detection":
+    st.title("Run Threat Detection")
+
+    uploaded = st.file_uploader(
+        "Upload a network flow CSV file",
+        type=["csv"],
+        help="Upload a CSV with the same features as CICIDS 2017"
+    )
+
+    model_path  = st.text_input("Model path",  value="models/random_forest.pkl")
+    scaler_path = st.text_input("Scaler path", value="models/scaler.pkl")
+    max_rows    = st.number_input("Max rows to process", value=1000, step=100)
+
+    if st.button("Run Detection", type="primary"):
+        if uploaded is None:
+            st.error("Please upload a CSV file first.")
+        elif not os.path.exists(model_path):
+            st.error(f"Model not found: {model_path}\nTrain the model first.")
+        elif not os.path.exists(scaler_path):
+            st.error(f"Scaler not found: {scaler_path}\nRun preprocessing first.")
+        else:
+            import subprocess
+            st.info("Running detection pipeline...")
+            # Save uploaded file temporarily
+            temp_path = "data/raw/uploaded_input.csv"
+            with open(temp_path, "wb") as f:
+                f.write(uploaded.read())
+
+            result = subprocess.run(
+                ["python", "src/detect.py",
+                 "--input", temp_path,
+                 "--model", model_path,
+                 "--max-rows", str(int(max_rows)),
+                 "--delay", "0"],
+                capture_output=True, text=True
+            )
+            st.code(result.stdout + result.stderr)
+
+            if os.path.exists("logs/threat_log.csv"):
+                st.success("Detection complete. Refresh the Live Dashboard tab to see results.")
+                df = pd.read_csv("logs/threat_log.csv")
+                st.dataframe(df.tail(50), use_container_width=True)
+
+# ============================================================
+# PAGE 3 — MODEL INFO
+# ============================================================
+
+elif page == "Model Info":
+    st.title("Model Information")
+
+    models = {
+        "Random Forest":  "models/random_forest.pkl",
+        "XGBoost":        "models/xgboost_model.pkl",
+        "LSTM":           "models/lstm_model.keras",
+        "Autoencoder":    "models/autoencoder.keras"
+    }
+
+    for name, path in models.items():
+        exists = os.path.exists(path)
+        status = "Trained" if exists else "Not trained yet"
+        color  = "green"   if exists else "orange"
+        st.markdown(f"**{name}** — :{color}[{status}]")
+        if exists:
+            size = os.path.getsize(path) / 1024
+            st.caption(f"Path: {path} | Size: {size:.1f} KB")
+
+    st.divider()
+    st.markdown("### How to train models")
+    st.code(
+        "# Step 1: Run preprocessing\n"
+        "python src/preprocess.py\n\n"
+        "# Step 2: Train all models\n"
+        "python src/train.py",
+        language="bash"
+    )
+
+    # Show selected features if available
+    if os.path.exists("data/selected_features.json"):
+        with open("data/selected_features.json") as f:
+            features = json.load(f)
+        st.subheader(f"Selected features ({len(features)} total)")
+        st.write(features)
+
+# ============================================================
+# PAGE 4 — ABOUT
+# ============================================================
+
+elif page == "About":
+    st.title("About This Project")
+
+    st.markdown("""
+## AI-Based Threat Detection Framework for Secure Cloud Environment
+
+An intelligent intrusion detection system that uses machine learning
+and deep learning to detect and classify cyberattacks in cloud network
+traffic in real time.
+
+### Models
+- **Random Forest** — Fast, interpretable baseline classifier
+- **XGBoost** — High-accuracy ensemble boosting
+- **LSTM** — Deep learning for sequential traffic patterns
+- **Autoencoder** — Unsupervised anomaly detection
+
+### Dataset
+CICIDS 2017 — ~2.83 million records, 79 features, 8 attack types
+
+### Tech Stack
+Python · TensorFlow · Scikit-learn · XGBoost · Streamlit · AWS
+
+### Project Timeline
+| Week | Module |
+|------|--------|
+| 1 | Planning, setup, EDA |
+| 2 | Data preprocessing |
+| 3 | Model training |
+| 4 | Integration, dashboard, report |
+""")
+
+    st.markdown("---")
+    st.caption("Built for: AI-Based Threat Detection — Cloud Security Project")
